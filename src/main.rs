@@ -46,7 +46,7 @@ async fn main(spawner: Spawner) -> ! {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0);
 
-    info!("Embassy initialized!");
+    info!("embassy initialized");
 
     let radio_init = &*make_static!(
         esp_radio::Controller,
@@ -54,7 +54,7 @@ async fn main(spawner: Spawner) -> ! {
     );
     let (wifi_controller, interfaces) = wifi::new(radio_init, peripherals.WIFI, Default::default())
         .expect("Failed to initialize Wi-Fi controller");
-    let (_stack, runner) = embassy_net::new(
+    let (stack, runner) = embassy_net::new(
         interfaces.sta,
         embassy_net::Config::dhcpv4(Default::default()),
         make_static!(
@@ -68,6 +68,7 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(net_runner(runner)).unwrap();
 
     let mut bme = initialize_bme(peripherals.I2C0, peripherals.GPIO32, peripherals.GPIO33);
+    wait_for_dhcp(stack).await;
 
     loop {
         let measurements = bme.measure(&mut Delay).unwrap();
@@ -81,7 +82,7 @@ async fn main(spawner: Spawner) -> ! {
 
 #[embassy_executor::task]
 async fn wifi_connection(mut controller: WifiController<'static>) {
-    info!("starting wifi connection task");
+    info!("starting wifi connection task...");
     loop {
         if wifi::sta_state() == WifiStaState::Connected {
             controller.wait_for_event(WifiEvent::StaDisconnected).await;
@@ -96,11 +97,11 @@ async fn wifi_connection(mut controller: WifiController<'static>) {
                     .with_password(PASSWORD.into()),
             );
             controller.set_config(&config).unwrap();
-            info!("starting wifi");
+            info!("starting wifi...");
             controller.start_async().await.unwrap();
             info!("wifi started");
         }
-        info!("wifi connecting");
+        info!("wifi connecting...");
         match controller.connect_async().await {
             Ok(()) => info!("wifi connected"),
             Err(e) => {
@@ -128,4 +129,17 @@ fn initialize_bme(
     let mut bme = bme280::i2c::BME280::new_primary(i2c);
     bme.init(&mut Delay).unwrap();
     bme
+}
+
+async fn wait_for_dhcp(stack: embassy_net::Stack<'_>) {
+    stack.wait_link_up().await;
+
+    info!("waiting to get IP address...");
+    loop {
+        stack.wait_config_up().await;
+        if let Some(config) = stack.config_v4() {
+            info!("got IP: {:?}", config.address);
+            break;
+        }
+    }
 }
