@@ -4,5 +4,4 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bme280 = { workspace = true, default-features = false }
 serde = { version = "1.0.228", default-features = false, features = ["derive"] }

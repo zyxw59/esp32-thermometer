@@ -31,17 +31,27 @@ macro_rules! make_static {
     }};
 }
 
+macro_rules! parse_env {
+    ($var:literal as $ty:ty) => {
+        match <$ty>::from_str_radix(env!($var), 10) {
+            Ok(value) => value,
+            Err(_) => panic!(concat!(
+                "failed to parse ",
+                $var,
+                "='",
+                env!($var),
+                "' as ",
+                stringify!($ty),
+            )),
+        }
+    };
+}
+
 const SSID: &str = env!("SSID");
 const PASSWORD: &str = env!("PASSWORD");
 const SERVER_HOST: &str = env!("SERVER_HOST");
-const SERVER_PORT: u16 = match u16::from_str_radix(env!("SERVER_PORT"), 10) {
-    Ok(port) => port,
-    Err(_) => panic!(concat!(
-        "failed to parse SERVER_PORT='",
-        env!("SERVER_PORT"),
-        "' as u16",
-    )),
-};
+const SERVER_PORT: u16 = parse_env!("SERVER_PORT" as u16);
+const LOCATION_ID: u32 = parse_env!("LOCATION_ID" as u32);
 
 static SERVER_ADDR: Watch<CriticalSectionRawMutex, IpAddress, 1> = Watch::new();
 
@@ -100,7 +110,13 @@ async fn main(spawner: Spawner) -> ! {
             Timer::after(Duration::from_secs(5)).await;
             continue;
         }
-        let measurement = Measurement::from(bme.measure(&mut Delay).await.unwrap());
+        let measurement = bme.measure(&mut Delay).await.unwrap();
+        let measurement = Measurement {
+            id: LOCATION_ID,
+            temperature: measurement.temperature,
+            pressure: measurement.pressure,
+            humidity: measurement.humidity,
+        };
 
         let data = postcard::to_slice(&measurement, &mut data_buffer).unwrap();
         if let Err(err) = socket.write_all(data).await {
