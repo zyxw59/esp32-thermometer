@@ -2,6 +2,8 @@
 name = "thermometer-data"
 version = "0.1.0"
 edition = "2024"
+authors = ["emily Crandall Fleischman <zyxw59@gmail.com>"]
+license = "GPL-v3.0-or-later"
 
 [dependencies]
 serde = { version = "1.0.228", default-features = false, features = ["derive"] }
