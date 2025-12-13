@@ -45,7 +45,7 @@ esp-rtos = { version = "0.2.0", features = [
   "esp-radio",
   "esp32",
 ] }
-postcard = "1.1.3"
+postcard = { workspace = true }
 smoltcp = { version = "0.12.0", default-features = false, features = [
   "defmt",
   "medium-ethernet",
