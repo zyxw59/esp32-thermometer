@@ -6,9 +6,14 @@
     holding buffers for the duration of a data transfer."
 )]
 
-use defmt::{info, warn};
+extern crate alloc;
+
+use defmt::{error, info, warn};
 use embassy_executor::Spawner;
+use embassy_net::{IpAddress, Stack, tcp::TcpSocket};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, watch::Watch};
 use embassy_time::{Delay, Duration, Timer};
+use embedded_io_async::Write;
 use esp_hal::{
     clock::CpuClock,
     gpio::OutputPin,
@@ -16,9 +21,8 @@ use esp_hal::{
     timer::timg::TimerGroup,
 };
 use esp_radio::wifi::{self, WifiController, WifiDevice, WifiEvent, WifiStaState};
+use thermometer_data::Measurement;
 use {esp_backtrace as _, esp_println as _};
-
-extern crate alloc;
 
 macro_rules! make_static {
     ($ty:ty, $val:expr $(,)?) => {{
@@ -29,6 +33,17 @@ macro_rules! make_static {
 
 const SSID: &str = env!("SSID");
 const PASSWORD: &str = env!("PASSWORD");
+const SERVER_HOST: &str = env!("SERVER_HOST");
+const SERVER_PORT: u16 = match u16::from_str_radix(env!("SERVER_PORT"), 10) {
+    Ok(port) => port,
+    Err(_) => panic!(concat!(
+        "failed to parse SERVER_PORT='",
+        env!("SERVER_PORT"),
+        "' as u16",
+    )),
+};
+
+static SERVER_ADDR: Watch<CriticalSectionRawMutex, IpAddress, 1> = Watch::new();
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -64,28 +79,50 @@ async fn main(spawner: Spawner) -> ! {
         0,
     );
 
-    spawner.spawn(wifi_connection(wifi_controller)).unwrap();
+    spawner
+        .spawn(wifi_connection(wifi_controller, stack))
+        .unwrap();
     spawner.spawn(net_runner(runner)).unwrap();
 
-    let mut bme = initialize_bme(peripherals.I2C0, peripherals.GPIO32, peripherals.GPIO33);
-    wait_for_dhcp(stack).await;
+    let mut bme = initialize_bme(peripherals.I2C0, peripherals.GPIO32, peripherals.GPIO33).await;
+
+    let mut rx_buffer = [0; 4096];
+    let mut tx_buffer = [0; 4096];
+    let mut server_ip_rx = SERVER_ADDR.receiver().unwrap();
+
+    let mut data_buffer = [0; 12];
 
     loop {
-        let measurements = bme.measure(&mut Delay).unwrap();
+        let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
+        let server_ip = server_ip_rx.get().await;
+        if let Err(err) = socket.connect((server_ip, SERVER_PORT)).await {
+            error!("failed to connect to server: {:?}", err);
+            Timer::after(Duration::from_secs(5)).await;
+            continue;
+        }
+        let measurement = Measurement::from(bme.measure(&mut Delay).await.unwrap());
+
+        let data = postcard::to_slice(&measurement, &mut data_buffer).unwrap();
+        if let Err(err) = socket.write_all(data).await {
+            error!("failed to write measurements: {:?}", err);
+            Timer::after(Duration::from_secs(5)).await;
+            continue;
+        }
         info!(
             "temperature: {=f32} °C, pressure: {=f32} Pa, humidity: {=f32}%",
-            measurements.temperature, measurements.pressure, measurements.humidity,
+            measurement.temperature, measurement.pressure, measurement.humidity,
         );
         Timer::after(Duration::from_secs(60)).await;
     }
 }
 
 #[embassy_executor::task]
-async fn wifi_connection(mut controller: WifiController<'static>) {
+async fn wifi_connection(mut controller: WifiController<'static>, stack: Stack<'static>) {
     info!("starting wifi connection task...");
     loop {
         if wifi::sta_state() == WifiStaState::Connected {
             controller.wait_for_event(WifiEvent::StaDisconnected).await;
+            SERVER_ADDR.sender().clear();
             warn!("wifi disconnected");
             Timer::after(Duration::from_secs(5)).await;
         }
@@ -102,38 +139,18 @@ async fn wifi_connection(mut controller: WifiController<'static>) {
             info!("wifi started");
         }
         info!("wifi connecting...");
-        match controller.connect_async().await {
-            Ok(()) => info!("wifi connected"),
-            Err(e) => {
-                warn!("failed to connect to wifi: {:?}", e);
-                Timer::after(Duration::from_secs(5)).await;
-            }
+        if let Err(e) = controller.connect_async().await {
+            warn!("failed to connect to wifi: {:?}", e);
+            Timer::after(Duration::from_secs(5)).await;
         }
+        info!("wifi connected");
+        wait_for_dhcp(stack).await;
+        wait_for_dns(stack).await;
     }
 }
 
-#[embassy_executor::task]
-async fn net_runner(mut runner: embassy_net::Runner<'static, WifiDevice<'static>>) {
-    runner.run().await
-}
-
-fn initialize_bme(
-    i2c: impl I2cInstance + 'static,
-    scl: impl OutputPin + 'static,
-    sda: impl OutputPin + 'static,
-) -> bme280::i2c::BME280<I2c<'static, esp_hal::Blocking>> {
-    let i2c = I2c::new(i2c, Default::default())
-        .unwrap()
-        .with_scl(scl)
-        .with_sda(sda);
-    let mut bme = bme280::i2c::BME280::new_primary(i2c);
-    bme.init(&mut Delay).unwrap();
-    bme
-}
-
-async fn wait_for_dhcp(stack: embassy_net::Stack<'_>) {
+async fn wait_for_dhcp(stack: Stack<'_>) {
     stack.wait_link_up().await;
-
     info!("waiting to get IP address...");
     loop {
         stack.wait_config_up().await;
@@ -142,4 +159,39 @@ async fn wait_for_dhcp(stack: embassy_net::Stack<'_>) {
             break;
         }
     }
+}
+
+async fn wait_for_dns(stack: Stack<'_>) {
+    let server_ip = loop {
+        match stack
+            .dns_query(SERVER_HOST, embassy_net::dns::DnsQueryType::A)
+            .await
+        {
+            Ok(ips) if !ips.is_empty() => break *ips.first().unwrap(),
+            Ok(_) => error!("DNS did not return any IP addresses for {:?}", SERVER_HOST),
+            Err(e) => error!("DNS error: {:?}", e),
+        }
+    };
+    SERVER_ADDR.sender().send(server_ip);
+    info!("server_ip: {:?}", server_ip);
+}
+
+#[embassy_executor::task]
+async fn net_runner(mut runner: embassy_net::Runner<'static, WifiDevice<'static>>) {
+    runner.run().await
+}
+
+async fn initialize_bme(
+    i2c: impl I2cInstance + 'static,
+    scl: impl OutputPin + 'static,
+    sda: impl OutputPin + 'static,
+) -> bme280::i2c::AsyncBME280<I2c<'static, esp_hal::Async>> {
+    let i2c = I2c::new(i2c, Default::default())
+        .unwrap()
+        .with_scl(scl)
+        .with_sda(sda)
+        .into_async();
+    let mut bme = bme280::i2c::AsyncBME280::new_primary(i2c);
+    bme.init(&mut Delay).await.unwrap();
+    bme
 }

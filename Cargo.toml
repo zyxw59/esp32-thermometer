@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
-members = ["esp32-thermometer"]
+members = ["esp32-thermometer", "thermometer-data"]
+
+[workspace.dependencies]
+bme280 = { version = "0.5.1", default-features = false }
+thermometer-data = { path = "./thermometer-data" }
 
 [profile.dev]
 # Rust debug is too slow.
