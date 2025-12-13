@@ -944,7 +944,6 @@ name = "esp32-thermometer"
 version = "0.1.0"
 dependencies = [
  "bme280",
- "critical-section",
  "defmt 1.0.1",
  "embassy-executor",
  "embassy-net",
@@ -959,7 +958,6 @@ dependencies = [
  "esp-radio",
  "esp-rtos",
  "postcard",
- "smoltcp",
  "static_cell",
  "thermometer-data",
 ]
