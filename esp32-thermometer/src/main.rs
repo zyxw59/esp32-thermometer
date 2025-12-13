@@ -100,7 +100,7 @@ async fn main(spawner: Spawner) -> ! {
     let mut tx_buffer = [0; 4096];
     let mut server_ip_rx = SERVER_ADDR.receiver().unwrap();
 
-    let mut data_buffer = [0; 12];
+    let mut data_buffer: thermometer_data::MeasurementBuffer = [0; _];
 
     loop {
         let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);

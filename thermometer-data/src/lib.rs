@@ -7,3 +7,5 @@ pub struct Measurement {
     pub pressure: f32,
     pub humidity: f32,
 }
+
+pub type MeasurementBuffer = [u8; core::mem::size_of::<Measurement>()];
