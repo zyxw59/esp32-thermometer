@@ -16,7 +16,7 @@ use embassy_time::{Delay, Duration, Timer};
 use embedded_io_async::Write;
 use esp_hal::{
     clock::CpuClock,
-    gpio::OutputPin,
+    gpio::AnyPin,
     i2c::master::{I2c, Instance as I2cInstance},
     timer::timg::TimerGroup,
 };
@@ -31,18 +31,27 @@ macro_rules! make_static {
     }};
 }
 
+macro_rules! from_str_radix {
+    ($var:literal, $value:expr, $ty:ty) => {
+        match <$ty>::from_str_radix($value, 10) {
+            Ok(value) => value,
+            Err(_) => panic!(concat!("failed to parse ", $var, " as ", stringify!($ty),)),
+        }
+    };
+}
+
 macro_rules! parse_env {
     ($var:literal as $ty:ty) => {
-        match <$ty>::from_str_radix(env!($var), 10) {
-            Ok(value) => value,
-            Err(_) => panic!(concat!(
-                "failed to parse ",
-                $var,
-                "='",
-                env!($var),
-                "' as ",
-                stringify!($ty),
-            )),
+        from_str_radix!($var, env!($var), $ty)
+    };
+}
+
+macro_rules! parse_env_or_default {
+    ($var:literal as $ty:ty, $default:expr) => {
+        if let Some(value) = option_env!($var) {
+            from_str_radix!($var, value, $ty)
+        } else {
+            $default
         }
     };
 }
@@ -50,8 +59,23 @@ macro_rules! parse_env {
 const SSID: &str = env!("SSID");
 const PASSWORD: &str = env!("PASSWORD");
 const SERVER_HOST: &str = env!("SERVER_HOST");
-const SERVER_PORT: u16 = parse_env!("SERVER_PORT" as u16);
+const SERVER_PORT: u16 = parse_env_or_default!("SERVER_PORT" as u16, 7878);
 const LOCATION_ID: u32 = parse_env!("LOCATION_ID" as u32);
+
+macro_rules! gpio_pin {
+    ($var:literal, $default:expr) => {
+        match parse_env_or_default!($var as u8, $default) {
+            x @ 0..=5 | x @ 12..=19 | x @ 21..=23 | x @ 25..=27 | x @ 32..=33 => x,
+            _ => panic!(concat!("invalid ", $var)),
+        }
+    };
+}
+
+const SCL_PIN: u8 = gpio_pin!("SCL_PIN", 32);
+const SDA_PIN: u8 = match gpio_pin!("SDA_PIN", 33) {
+    p if p == SCL_PIN => panic!("SCL_PIN and SDA_PIN cannot be the same"),
+    p => p,
+};
 
 static SERVER_ADDR: Watch<CriticalSectionRawMutex, IpAddress, 1> = Watch::new();
 
@@ -94,7 +118,14 @@ async fn main(spawner: Spawner) -> ! {
         .unwrap();
     spawner.spawn(net_runner(runner)).unwrap();
 
-    let mut bme = initialize_bme(peripherals.I2C0, peripherals.GPIO32, peripherals.GPIO33).await;
+    let mut bme = initialize_bme(
+        peripherals.I2C0,
+        // SAFETY: these are the only pins we use, and we have already checked that they are not
+        // the same
+        unsafe { AnyPin::steal(SCL_PIN) },
+        unsafe { AnyPin::steal(SDA_PIN) },
+    )
+    .await;
 
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
@@ -199,8 +230,8 @@ async fn net_runner(mut runner: embassy_net::Runner<'static, WifiDevice<'static>
 
 async fn initialize_bme(
     i2c: impl I2cInstance + 'static,
-    scl: impl OutputPin + 'static,
-    sda: impl OutputPin + 'static,
+    scl: AnyPin<'static>,
+    sda: AnyPin<'static>,
 ) -> bme280::i2c::AsyncBME280<I2c<'static, esp_hal::Async>> {
     let i2c = I2c::new(i2c, Default::default())
         .unwrap()
