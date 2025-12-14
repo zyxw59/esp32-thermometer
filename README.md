@@ -34,3 +34,4 @@ The following environment variables are recognized and have default values:
 - `SERVER_PORT`: Port to use for the server. Defaults to 7878
 - `SCL_PIN`: GPIO pin for I²C clock. Defaults to 32
 - `SDA_PIN`: GPIO pin for I²C data. Defaults to 33
+- `INTERVAL`: Interval (in seconds) between measurements

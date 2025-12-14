@@ -61,6 +61,7 @@ const PASSWORD: &str = env!("PASSWORD");
 const SERVER_HOST: &str = env!("SERVER_HOST");
 const SERVER_PORT: u16 = parse_env_or_default!("SERVER_PORT" as u16, 7878);
 const LOCATION_ID: u32 = parse_env!("LOCATION_ID" as u32);
+const INTERVAL: u64 = parse_env_or_default!("INTERVAL" as u64, 60);
 
 macro_rules! gpio_pin {
     ($var:literal, $default:expr) => {
@@ -159,7 +160,7 @@ async fn main(spawner: Spawner) -> ! {
             "temperature: {=f32} °C, pressure: {=f32} Pa, humidity: {=f32}%",
             measurement.temperature, measurement.pressure, measurement.humidity,
         );
-        Timer::after(Duration::from_secs(60)).await;
+        Timer::after(Duration::from_secs(INTERVAL)).await;
     }
 }
 
