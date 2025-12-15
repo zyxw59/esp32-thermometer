@@ -15,23 +15,25 @@ fn main() -> Result<(), Error> {
     eprintln!("listening on {}", listener.local_addr()?);
     println!("time,timestamp,location_id,temperature,pressure,humidity");
     loop {
-        let (stream, _) = listener.accept()?;
+        let (stream, src) = listener.accept()?;
+        eprintln!("connection from {src}");
         std::thread::spawn(move || handle_stream(stream));
     }
 }
 
-fn handle_stream(stream: TcpStream) -> Result<(), Error> {
+fn handle_stream(stream: TcpStream) {
     let mut buffer: MeasurementBuffer = [0; _];
     let now = chrono::Local::now();
-    let (measurement, _) = postcard::from_io::<Measurement, TcpStream>((stream, &mut buffer))?;
-    println!(
-        "{},{},{},{},{},{}",
-        now.format("%Y-%m-%d %H:%M:%S %:z"),
-        now.format("%s"),
-        measurement.id,
-        measurement.temperature,
-        measurement.pressure,
-        measurement.humidity,
-    );
-    Ok(())
+    match postcard::from_io::<Measurement, TcpStream>((stream, &mut buffer)) {
+        Ok((measurement, _)) => println!(
+            "{},{},{},{},{},{}",
+            now.format("%Y-%m-%d %H:%M:%S %:z"),
+            now.format("%s"),
+            measurement.id,
+            measurement.temperature,
+            measurement.pressure,
+            measurement.humidity,
+        ),
+        Err(err) => eprintln!("failed to deserialize data: {err}"),
+    }
 }
