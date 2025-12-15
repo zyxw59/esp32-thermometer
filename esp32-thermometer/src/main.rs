@@ -156,7 +156,6 @@ async fn main(spawner: Spawner) -> ! {
             Timer::after(Duration::from_secs(5)).await;
             continue;
         }
-        drop(socket);
         info!(
             "temperature: {=f32} °C, pressure: {=f32} Pa, humidity: {=f32}%",
             measurement.temperature, measurement.pressure, measurement.humidity,
