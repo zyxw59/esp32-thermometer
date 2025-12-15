@@ -190,6 +190,7 @@ async fn wifi_connection(mut controller: WifiController<'static>, stack: Stack<'
         if let Err(e) = controller.connect_async().await {
             warn!("failed to connect to wifi: {:?}", e);
             Timer::after(Duration::from_secs(5)).await;
+            continue;
         }
         info!("wifi connected");
         wait_for_dhcp(stack).await;
