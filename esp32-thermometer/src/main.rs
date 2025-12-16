@@ -8,7 +8,7 @@
 
 extern crate alloc;
 
-use defmt::{debug, error, info, warn};
+use defmt::{error, info, warn};
 use embassy_executor::Spawner;
 use embassy_net::{IpAddress, Stack, tcp::TcpSocket};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, watch::Watch};
@@ -159,7 +159,7 @@ async fn measurement_loop(
         .connect((server_ip, SERVER_PORT))
         .await
         .map_err(|err| error!("failed to connect to server: {:?}", err))?;
-    debug!("connected to server");
+    info!("connected to server");
 
     let measurement = bme
         .measure(&mut Delay)
@@ -182,9 +182,9 @@ async fn measurement_loop(
         .write_all(data)
         .await
         .map_err(|err| error!("failed to write measurements: {:?}", err))?;
-    debug!("data written");
+    info!("data written");
     socket.close();
-    debug!("socket closed");
+    info!("socket closed");
     Ok(())
 }
 
