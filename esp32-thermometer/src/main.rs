@@ -284,8 +284,11 @@ async fn initialize_bme(
         .with_sda(sda)
         .into_async();
     let mut bme = bme280::i2c::AsyncBME280::new_primary(i2c);
-    bme.init(&mut Delay)
-        .await
-        .map_err(|err| error!("unable to configure BME280: {:?}", err))?;
+    bme.init(&mut Delay).await.map_err(|err| {
+        error!("unable to configure BME280: {:?}", err);
+        if let bme280::Error::Bus(err) = err {
+            error!("caused by: {:?}", err);
+        }
+    })?;
     Ok(bme)
 }
