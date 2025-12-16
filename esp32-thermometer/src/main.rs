@@ -8,7 +8,7 @@
 
 extern crate alloc;
 
-use defmt::{error, info, warn};
+use defmt::{debug, error, info, warn};
 use embassy_executor::Spawner;
 use embassy_net::{IpAddress, Stack, tcp::TcpSocket};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, watch::Watch};
@@ -159,6 +159,7 @@ async fn measurement_loop(
         .connect((server_ip, SERVER_PORT))
         .await
         .map_err(|err| error!("failed to connect to server: {:?}", err))?;
+    debug!("connected to server");
 
     let measurement = bme
         .measure(&mut Delay)
@@ -170,6 +171,10 @@ async fn measurement_loop(
         pressure: measurement.pressure,
         humidity: measurement.humidity,
     };
+    info!(
+        "temperature: {=f32} °C, pressure: {=f32} Pa, humidity: {=f32}%",
+        measurement.temperature, measurement.pressure, measurement.humidity,
+    );
 
     let data = postcard::to_slice(&measurement, serialization_buffer)
         .map_err(|err| error!("failed to serialize data: {:?}", err))?;
@@ -177,11 +182,9 @@ async fn measurement_loop(
         .write_all(data)
         .await
         .map_err(|err| error!("failed to write measurements: {:?}", err))?;
+    debug!("data written");
     socket.close();
-    info!(
-        "temperature: {=f32} °C, pressure: {=f32} Pa, humidity: {=f32}%",
-        measurement.temperature, measurement.pressure, measurement.humidity,
-    );
+    debug!("socket closed");
     Ok(())
 }
 
