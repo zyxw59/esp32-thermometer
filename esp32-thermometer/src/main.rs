@@ -120,6 +120,7 @@ async fn main(spawner: Spawner) -> ! {
         .unwrap();
     spawner.spawn(net_runner(runner)).unwrap();
 
+    info!("initializing BME280...");
     let mut bme = initialize_bme(
         peripherals.I2C0,
         // SAFETY: these are the only pins we use, and we have already checked that they are not
@@ -129,6 +130,7 @@ async fn main(spawner: Spawner) -> ! {
     )
     .await
     .unwrap();
+    info!("BME280 initialized");
 
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
