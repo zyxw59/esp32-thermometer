@@ -127,7 +127,8 @@ async fn main(spawner: Spawner) -> ! {
         unsafe { AnyPin::steal(SCL_PIN) },
         unsafe { AnyPin::steal(SDA_PIN) },
     )
-    .await;
+    .await
+    .unwrap();
 
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
@@ -276,13 +277,15 @@ async fn initialize_bme(
     i2c: impl I2cInstance + 'static,
     scl: AnyPin<'static>,
     sda: AnyPin<'static>,
-) -> bme280::i2c::AsyncBME280<I2c<'static, esp_hal::Async>> {
+) -> Result<bme280::i2c::AsyncBME280<I2c<'static, esp_hal::Async>>, ()> {
     let i2c = I2c::new(i2c, Default::default())
-        .unwrap()
+        .map_err(|err| error!("unable to configure I2C: {:?}", err))?
         .with_scl(scl)
         .with_sda(sda)
         .into_async();
     let mut bme = bme280::i2c::AsyncBME280::new_primary(i2c);
-    bme.init(&mut Delay).await.unwrap();
-    bme
+    bme.init(&mut Delay)
+        .await
+        .map_err(|err| error!("unable to configure BME280: {:?}", err))?;
+    Ok(bme)
 }
