@@ -82,6 +82,7 @@ version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "169ac81b9123f316fde5b0e00175294dcdcdd800c1a6c92a4b58caf42a14cf1f"
 dependencies = [
+ "defmt 0.3.100",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
  "maybe-async-cfg",
@@ -1435,6 +1436,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6764c3b5dd454e283a30e6dfe78e9b31096d9e32036b5d1eaac7a6119ccb9a24"
 dependencies = [
  "cobs",
+ "defmt 1.0.1",
  "embedded-io 0.4.0",
  "embedded-io 0.6.1",
  "serde",

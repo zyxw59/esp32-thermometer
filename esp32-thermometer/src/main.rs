@@ -62,6 +62,7 @@ const SERVER_HOST: &str = env!("SERVER_HOST");
 const SERVER_PORT: u16 = parse_env_or_default!("SERVER_PORT" as u16, 7878);
 const LOCATION_ID: u32 = parse_env!("LOCATION_ID" as u32);
 const INTERVAL: u64 = parse_env_or_default!("INTERVAL" as u64, 60);
+const RETRY_INTERVAL: u64 = parse_env_or_default!("RETRY_INTERVAL" as u64, 5);
 
 macro_rules! gpio_pin {
     ($var:literal, $default:expr) => {
@@ -130,72 +131,107 @@ async fn main(spawner: Spawner) -> ! {
 
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
+    let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
     let mut server_ip_rx = SERVER_ADDR.receiver().unwrap();
 
-    let mut data_buffer: thermometer_data::MeasurementBuffer = [0; _];
+    let mut serialization_buffer: thermometer_data::MeasurementBuffer = [0; _];
 
     loop {
-        let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
         let server_ip = server_ip_rx.get().await;
-        if let Err(err) = socket.connect((server_ip, SERVER_PORT)).await {
-            error!("failed to connect to server: {:?}", err);
-            Timer::after(Duration::from_secs(5)).await;
-            continue;
+        if measurement_loop(&mut socket, server_ip, &mut bme, &mut serialization_buffer)
+            .await
+            .is_ok()
+        {
+            Timer::after(Duration::from_secs(INTERVAL)).await;
+        } else {
+            Timer::after(Duration::from_secs(RETRY_INTERVAL)).await;
         }
-        let measurement = bme.measure(&mut Delay).await.unwrap();
-        let measurement = Measurement {
-            id: LOCATION_ID,
-            temperature: measurement.temperature,
-            pressure: measurement.pressure,
-            humidity: measurement.humidity,
-        };
-
-        let data = postcard::to_slice(&measurement, &mut data_buffer).unwrap();
-        if let Err(err) = socket.write_all(data).await {
-            error!("failed to write measurements: {:?}", err);
-            Timer::after(Duration::from_secs(5)).await;
-            continue;
-        }
-        info!(
-            "temperature: {=f32} °C, pressure: {=f32} Pa, humidity: {=f32}%",
-            measurement.temperature, measurement.pressure, measurement.humidity,
-        );
-        Timer::after(Duration::from_secs(INTERVAL)).await;
     }
+}
+
+async fn measurement_loop(
+    socket: &mut TcpSocket<'_>,
+    server_ip: IpAddress,
+    bme: &mut bme280::i2c::AsyncBME280<I2c<'static, esp_hal::Async>>,
+    serialization_buffer: &mut thermometer_data::MeasurementBuffer,
+) -> Result<(), ()> {
+    socket
+        .connect((server_ip, SERVER_PORT))
+        .await
+        .map_err(|err| error!("failed to connect to server: {:?}", err))?;
+
+    let measurement = bme
+        .measure(&mut Delay)
+        .await
+        .map_err(|err| error!("failed to read measurement: {:?}", err))?;
+    let measurement = Measurement {
+        id: LOCATION_ID,
+        temperature: measurement.temperature,
+        pressure: measurement.pressure,
+        humidity: measurement.humidity,
+    };
+
+    let data = postcard::to_slice(&measurement, serialization_buffer)
+        .map_err(|err| error!("failed to serialize data: {:?}", err))?;
+    socket
+        .write_all(data)
+        .await
+        .map_err(|err| error!("failed to write measurements: {:?}", err))?;
+    socket.close();
+    info!(
+        "temperature: {=f32} °C, pressure: {=f32} Pa, humidity: {=f32}%",
+        measurement.temperature, measurement.pressure, measurement.humidity,
+    );
+    Ok(())
 }
 
 #[embassy_executor::task]
 async fn wifi_connection(mut controller: WifiController<'static>, stack: Stack<'static>) {
     info!("starting wifi connection task...");
     loop {
-        if wifi::sta_state() == WifiStaState::Connected {
-            controller.wait_for_event(WifiEvent::StaDisconnected).await;
-            SERVER_ADDR.sender().clear();
-            warn!("wifi disconnected");
-            Timer::after(Duration::from_secs(5)).await;
-        }
-        if !matches!(controller.is_started(), Ok(true)) {
-            // configure and start wifi
-            let config = wifi::ModeConfig::Client(
-                wifi::ClientConfig::default()
-                    .with_ssid(SSID.into())
-                    .with_password(PASSWORD.into()),
-            );
-            controller.set_config(&config).unwrap();
-            info!("starting wifi...");
-            controller.start_async().await.unwrap();
-            info!("wifi started");
-        }
-        info!("wifi connecting...");
-        if let Err(e) = controller.connect_async().await {
-            warn!("failed to connect to wifi: {:?}", e);
-            Timer::after(Duration::from_secs(5)).await;
-            continue;
-        }
-        info!("wifi connected");
-        wait_for_dhcp(stack).await;
-        wait_for_dns(stack).await;
+        let (Ok(()) | Err(())) = wifi_connection_loop(&mut controller, stack).await;
+        Timer::after(Duration::from_secs(RETRY_INTERVAL)).await;
     }
+}
+
+async fn wifi_connection_loop(
+    controller: &mut WifiController<'static>,
+    stack: Stack<'static>,
+) -> Result<(), ()> {
+    if wifi::sta_state() == WifiStaState::Connected {
+        controller.wait_for_event(WifiEvent::StaDisconnected).await;
+        SERVER_ADDR.sender().clear();
+        warn!("wifi disconnected");
+    }
+    if !matches!(controller.is_started(), Ok(true)) {
+        // configure and start wifi
+        let config = wifi::ModeConfig::Client(
+            wifi::ClientConfig::default()
+                .with_ssid(SSID.into())
+                .with_password(PASSWORD.into()),
+        );
+        controller
+            .set_config(&config)
+            .map_err(|err| error!("unable to set wifi config: {:?}", err))?;
+        info!("starting wifi...");
+        controller
+            .start_async()
+            .await
+            .map_err(|err| error!("unable to start wifi: {:?}", err))?;
+        info!("wifi started");
+    }
+    info!("wifi connecting...");
+    controller
+        .connect_async()
+        .await
+        .map_err(|err| warn!("failed to connect to wifi: {:?}", err))?;
+
+    info!("wifi connected");
+    wait_for_dhcp(stack).await;
+    let server_ip = get_server_ip(stack).await?;
+    SERVER_ADDR.sender().send(server_ip);
+    info!("server_ip: {:?}", server_ip);
+    Ok(())
 }
 
 async fn wait_for_dhcp(stack: Stack<'_>) {
@@ -210,19 +246,22 @@ async fn wait_for_dhcp(stack: Stack<'_>) {
     }
 }
 
-async fn wait_for_dns(stack: Stack<'_>) {
-    let server_ip = loop {
-        match stack
-            .dns_query(SERVER_HOST, embassy_net::dns::DnsQueryType::A)
-            .await
-        {
-            Ok(ips) if !ips.is_empty() => break *ips.first().unwrap(),
-            Ok(_) => error!("DNS did not return any IP addresses for {:?}", SERVER_HOST),
-            Err(e) => error!("DNS error: {:?}", e),
+async fn get_server_ip(stack: Stack<'_>) -> Result<IpAddress, ()> {
+    match stack
+        .dns_query(SERVER_HOST, embassy_net::dns::DnsQueryType::A)
+        .await
+        .map(|ips| ips.first().copied())
+    {
+        Ok(Some(ip)) => Ok(ip),
+        Ok(None) => {
+            error!("DNS did not return any IP addresses for {:?}", SERVER_HOST);
+            Err(())
         }
-    };
-    SERVER_ADDR.sender().send(server_ip);
-    info!("server_ip: {:?}", server_ip);
+        Err(err) => {
+            error!("DNS error: {:?}", err);
+            Err(())
+        }
+    }
 }
 
 #[embassy_executor::task]
