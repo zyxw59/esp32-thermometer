@@ -134,14 +134,15 @@ async fn main(spawner: Spawner) -> ! {
 
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
-    let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
     let mut server_ip_rx = SERVER_ADDR.receiver().unwrap();
 
     let mut serialization_buffer: thermometer_data::MeasurementBuffer = [0; _];
 
     loop {
+        info!("waiting for server ip");
         let server_ip = server_ip_rx.get().await;
-        if measurement_loop(&mut socket, server_ip, &mut bme, &mut serialization_buffer)
+        let socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
+        if measurement_loop(socket, server_ip, &mut bme, &mut serialization_buffer)
             .await
             .is_ok()
         {
@@ -153,7 +154,7 @@ async fn main(spawner: Spawner) -> ! {
 }
 
 async fn measurement_loop(
-    socket: &mut TcpSocket<'_>,
+    mut socket: TcpSocket<'_>,
     server_ip: IpAddress,
     bme: &mut bme280::i2c::AsyncBME280<I2c<'static, esp_hal::Async>>,
     serialization_buffer: &mut thermometer_data::MeasurementBuffer,
@@ -186,7 +187,8 @@ async fn measurement_loop(
         .await
         .map_err(|err| error!("failed to write measurements: {:?}", err))?;
     info!("data written");
-    socket.close();
+    socket.flush().await.map_err(|err| error!("failed to flush data: {:?}", err))?;
+    drop(socket);
     info!("socket closed");
     Ok(())
 }
