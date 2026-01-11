@@ -12,7 +12,7 @@ use defmt::{error, info, warn};
 use embassy_executor::Spawner;
 use embassy_net::{IpAddress, Stack, tcp::TcpSocket};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, watch::Watch};
-use embassy_time::{Delay, Duration, Timer};
+use embassy_time::{Delay, Duration, Timer, WithTimeout};
 use embedded_io_async::Write;
 use esp_hal::{
     clock::CpuClock,
@@ -61,8 +61,9 @@ const PASSWORD: &str = env!("PASSWORD");
 const SERVER_HOST: &str = env!("SERVER_HOST");
 const SERVER_PORT: u16 = parse_env_or_default!("SERVER_PORT" as u16, 7878);
 const LOCATION_ID: u32 = parse_env!("LOCATION_ID" as u32);
-const INTERVAL: u64 = parse_env_or_default!("INTERVAL" as u64, 60);
-const RETRY_INTERVAL: u64 = parse_env_or_default!("RETRY_INTERVAL" as u64, 5);
+const INTERVAL: Duration = Duration::from_secs(parse_env_or_default!("INTERVAL" as u64, 60));
+const RETRY_INTERVAL: Duration =
+    Duration::from_secs(parse_env_or_default!("RETRY_INTERVAL" as u64, 5));
 
 macro_rules! gpio_pin {
     ($var:literal, $default:expr) => {
@@ -140,15 +141,18 @@ async fn main(spawner: Spawner) -> ! {
 
     loop {
         info!("waiting for server ip");
-        let server_ip = server_ip_rx.get().await;
+        let Ok(server_ip) = server_ip_rx.get().with_timeout(RETRY_INTERVAL).await else {
+            warn!("timeout waiting for server ip");
+            continue;
+        };
         let socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
         if measurement_loop(socket, server_ip, &mut bme, &mut serialization_buffer)
             .await
             .is_ok()
         {
-            Timer::after(Duration::from_secs(INTERVAL)).await;
+            Timer::after(INTERVAL).await;
         } else {
-            Timer::after(Duration::from_secs(RETRY_INTERVAL)).await;
+            Timer::after(RETRY_INTERVAL).await;
         }
     }
 }
@@ -187,7 +191,10 @@ async fn measurement_loop(
         .await
         .map_err(|err| error!("failed to write measurements: {:?}", err))?;
     info!("data written");
-    socket.flush().await.map_err(|err| error!("failed to flush data: {:?}", err))?;
+    socket
+        .flush()
+        .await
+        .map_err(|err| error!("failed to flush data: {:?}", err))?;
     drop(socket);
     info!("socket closed");
     Ok(())
@@ -198,7 +205,7 @@ async fn wifi_connection(mut controller: WifiController<'static>, stack: Stack<'
     info!("starting wifi connection task...");
     loop {
         let (Ok(()) | Err(())) = wifi_connection_loop(&mut controller, stack).await;
-        Timer::after(Duration::from_secs(RETRY_INTERVAL)).await;
+        Timer::after(RETRY_INTERVAL).await;
     }
 }
 
@@ -208,8 +215,8 @@ async fn wifi_connection_loop(
 ) -> Result<(), ()> {
     if wifi::sta_state() == WifiStaState::Connected {
         controller.wait_for_event(WifiEvent::StaDisconnected).await;
-        SERVER_ADDR.sender().clear();
         warn!("wifi disconnected");
+        SERVER_ADDR.sender().clear();
     }
     if !matches!(controller.is_started(), Ok(true)) {
         // configure and start wifi
