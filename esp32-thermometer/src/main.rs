@@ -11,7 +11,10 @@ extern crate alloc;
 use defmt::{error, info, warn};
 use embassy_executor::Spawner;
 use embassy_net::{IpAddress, Stack, tcp::TcpSocket};
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, watch::Watch};
+use embassy_sync::{
+    blocking_mutex::raw::CriticalSectionRawMutex,
+    watch::{Receiver, Watch},
+};
 use embassy_time::{Delay, Duration, Timer, WithTimeout};
 use embedded_io_async::Write;
 use esp_hal::{
@@ -140,15 +143,18 @@ async fn main(spawner: Spawner) -> ! {
     let mut serialization_buffer: thermometer_data::MeasurementBuffer = [0; _];
 
     loop {
-        info!("waiting for server ip");
-        let Ok(server_ip) = server_ip_rx.get().with_timeout(RETRY_INTERVAL).await else {
-            warn!("timeout waiting for server ip");
-            continue;
-        };
         let socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
-        if measurement_loop(socket, server_ip, &mut bme, &mut serialization_buffer)
-            .await
-            .is_ok()
+        if measurement_loop(
+            socket,
+            &mut server_ip_rx,
+            &mut bme,
+            &mut serialization_buffer,
+        )
+        .with_timeout(INTERVAL)
+        .await
+        .map_err(|_| warn!("timeout in measurement loop"))
+        .flatten()
+        .is_ok()
         {
             Timer::after(INTERVAL).await;
         } else {
@@ -159,10 +165,12 @@ async fn main(spawner: Spawner) -> ! {
 
 async fn measurement_loop(
     mut socket: TcpSocket<'_>,
-    server_ip: IpAddress,
+    server_ip_rx: &mut Receiver<'_, CriticalSectionRawMutex, IpAddress, 1>,
     bme: &mut bme280::i2c::AsyncBME280<I2c<'static, esp_hal::Async>>,
     serialization_buffer: &mut thermometer_data::MeasurementBuffer,
 ) -> Result<(), ()> {
+    info!("waiting for server ip");
+    let server_ip = server_ip_rx.get().await;
     socket
         .connect((server_ip, SERVER_PORT))
         .await
