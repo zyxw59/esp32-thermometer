@@ -228,9 +228,11 @@ async fn wifi_connection_loop(
 ) -> Result<(), ()> {
     connect_wifi(controller).await?;
     wait_for_dhcp(stack).await;
-    let server_ip = get_server_ip(stack).await?;
-    SERVER_ADDR.sender().send(server_ip);
-    info!("[wifi] server_ip: {:?}", server_ip);
+    if SERVER_ADDR.try_get().is_none() {
+        let server_ip = get_server_ip(stack).await?;
+        SERVER_ADDR.sender().send(server_ip);
+        info!("[wifi] server_ip: {:?}", server_ip);
+    }
     Ok(())
 }
 
@@ -242,6 +244,7 @@ async fn connect_wifi(controller: &mut WifiController<'static>) -> Result<(), ()
             return Ok(());
         }
         warn!("[wifi] wifi disconnected: {}", state);
+        SERVER_ADDR.sender().clear();
 
         if !matches!(controller.is_started(), Ok(true)) {
             // configure and start wifi
