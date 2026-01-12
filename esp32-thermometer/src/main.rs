@@ -212,7 +212,13 @@ async fn measurement_loop(
 async fn wifi_connection(mut controller: WifiController<'static>, stack: Stack<'static>) {
     info!("starting wifi connection task...");
     loop {
-        let (Ok(()) | Err(())) = wifi_connection_loop(&mut controller, stack).await;
+        let (Ok(()) | Err(())) = wifi_connection_loop(&mut controller, stack)
+            .with_timeout(INTERVAL)
+            .await
+            .map_err(|_| {
+                warn!("wifi connection loop timeout");
+            })
+            .flatten();
         Timer::after(RETRY_INTERVAL).await;
     }
 }
