@@ -23,7 +23,7 @@ use esp_hal::{
     i2c::master::{I2c, Instance as I2cInstance},
     timer::timg::TimerGroup,
 };
-use esp_radio::wifi::{self, WifiController, WifiDevice, WifiEvent, WifiStaState};
+use esp_radio::wifi::{self, WifiController, WifiDevice, WifiStaState};
 use thermometer_data::Measurement;
 use {esp_backtrace as _, esp_println as _};
 
@@ -82,6 +82,24 @@ const SDA_PIN: u8 = match gpio_pin!("SDA_PIN", 33) {
     p if p == SCL_PIN => panic!("SCL_PIN and SDA_PIN cannot be the same"),
     p => p,
 };
+
+macro_rules! timeout_loop {
+    ($name:literal, $body:expr $(,)?) => {
+        loop {
+            if $body
+                .with_timeout(INTERVAL)
+                .await
+                .map_err(|_| warn!("timeout in {} loop", $name))
+                .flatten()
+                .is_ok()
+            {
+                Timer::after(INTERVAL).await;
+            } else {
+                Timer::after(RETRY_INTERVAL).await;
+            }
+        }
+    };
+}
 
 static SERVER_ADDR: Watch<CriticalSectionRawMutex, IpAddress, 1> = Watch::new();
 
@@ -142,25 +160,15 @@ async fn main(spawner: Spawner) -> ! {
 
     let mut serialization_buffer: thermometer_data::MeasurementBuffer = [0; _];
 
-    loop {
+    timeout_loop!("measurement", {
         let socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
-        if measurement_loop(
+        measurement_loop(
             socket,
             &mut server_ip_rx,
             &mut bme,
             &mut serialization_buffer,
         )
-        .with_timeout(INTERVAL)
-        .await
-        .map_err(|_| warn!("timeout in measurement loop"))
-        .flatten()
-        .is_ok()
-        {
-            Timer::after(INTERVAL).await;
-        } else {
-            Timer::after(RETRY_INTERVAL).await;
-        }
-    }
+    })
 }
 
 async fn measurement_loop(
@@ -209,54 +217,16 @@ async fn measurement_loop(
 }
 
 #[embassy_executor::task]
-async fn wifi_connection(mut controller: WifiController<'static>, stack: Stack<'static>) {
+async fn wifi_connection(mut controller: WifiController<'static>, stack: Stack<'static>) -> ! {
     info!("starting wifi connection task...");
-    loop {
-        let (Ok(()) | Err(())) = wifi_connection_loop(&mut controller, stack)
-            .with_timeout(INTERVAL)
-            .await
-            .map_err(|_| {
-                warn!("timeout in wifi connection loop");
-            })
-            .flatten();
-        Timer::after(RETRY_INTERVAL).await;
-    }
+    timeout_loop!("wifi", wifi_connection_loop(&mut controller, stack))
 }
 
 async fn wifi_connection_loop(
     controller: &mut WifiController<'static>,
     stack: Stack<'static>,
 ) -> Result<(), ()> {
-    info!("wifi state: {}", wifi::sta_state());
-    if wifi::sta_state() == WifiStaState::Connected {
-        controller.wait_for_event(WifiEvent::StaDisconnected).await;
-        warn!("wifi disconnected");
-        SERVER_ADDR.sender().clear();
-    }
-    if !matches!(controller.is_started(), Ok(true)) {
-        // configure and start wifi
-        let config = wifi::ModeConfig::Client(
-            wifi::ClientConfig::default()
-                .with_ssid(SSID.into())
-                .with_password(PASSWORD.into()),
-        );
-        controller
-            .set_config(&config)
-            .map_err(|err| error!("unable to set wifi config: {:?}", err))?;
-        info!("starting wifi...");
-        controller
-            .start_async()
-            .await
-            .map_err(|err| error!("unable to start wifi: {:?}", err))?;
-        info!("wifi started");
-    }
-    info!("wifi connecting...");
-    controller
-        .connect_async()
-        .await
-        .map_err(|err| warn!("failed to connect to wifi: {:?}", err))?;
-
-    info!("wifi connected");
+    connect_wifi(controller).await?;
     wait_for_dhcp(stack).await;
     let server_ip = get_server_ip(stack).await?;
     SERVER_ADDR.sender().send(server_ip);
@@ -264,15 +234,49 @@ async fn wifi_connection_loop(
     Ok(())
 }
 
-async fn wait_for_dhcp(stack: Stack<'_>) {
-    stack.wait_link_up().await;
-    info!("waiting to get IP address...");
+async fn connect_wifi(controller: &mut WifiController<'static>) -> Result<(), ()> {
     loop {
-        stack.wait_config_up().await;
+        let state = wifi::sta_state();
+        if wifi::sta_state() == WifiStaState::Connected {
+            info!("wifi connected!");
+            return Ok(());
+        }
+        warn!("wifi disconnected: {}", state);
+
+        if !matches!(controller.is_started(), Ok(true)) {
+            // configure and start wifi
+            let config = wifi::ModeConfig::Client(
+                wifi::ClientConfig::default()
+                    .with_ssid(SSID.into())
+                    .with_password(PASSWORD.into()),
+            );
+            controller
+                .set_config(&config)
+                .map_err(|err| error!("unable to set wifi config: {:?}", err))?;
+            info!("starting wifi...");
+            controller
+                .start_async()
+                .await
+                .map_err(|err| error!("unable to start wifi: {:?}", err))?;
+            info!("wifi started");
+        }
+        info!("wifi connecting...");
+        controller
+            .connect_async()
+            .await
+            .map_err(|err| warn!("failed to connect to wifi: {:?}", err))?;
+    }
+}
+
+async fn wait_for_dhcp(stack: Stack<'_>) {
+    loop {
         if let Some(config) = stack.config_v4() {
             info!("got IP: {:?}", config.address);
             break;
         }
+        stack.wait_link_up().await;
+        info!("waiting to get IP address...");
+        stack.wait_config_up().await;
     }
 }
 
