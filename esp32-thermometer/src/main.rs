@@ -216,7 +216,7 @@ async fn wifi_connection(mut controller: WifiController<'static>, stack: Stack<'
             .with_timeout(INTERVAL)
             .await
             .map_err(|_| {
-                warn!("wifi connection loop timeout");
+                warn!("timeout in wifi connection loop");
             })
             .flatten();
         Timer::after(RETRY_INTERVAL).await;
@@ -227,6 +227,7 @@ async fn wifi_connection_loop(
     controller: &mut WifiController<'static>,
     stack: Stack<'static>,
 ) -> Result<(), ()> {
+    info!("wifi state: {}", wifi::sta_state());
     if wifi::sta_state() == WifiStaState::Connected {
         controller.wait_for_event(WifiEvent::StaDisconnected).await;
         warn!("wifi disconnected");
