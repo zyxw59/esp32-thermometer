@@ -227,9 +227,12 @@ async fn wifi_connection_loop(
     controller: &mut WifiController<'static>,
     stack: Stack<'static>,
 ) -> Result<(), ()> {
+    start_wifi(controller).await?;
     connect_wifi(controller).await?;
     wait_for_dhcp(stack).await;
-    if SERVER_ADDR.try_get().is_none() {
+    if let Some(server_ip) = SERVER_ADDR.try_get() {
+        info!("[wifi] server_ip already set to {:?}", server_ip);
+    } else {
         let server_ip = get_server_ip(stack).await?;
         SERVER_ADDR.sender().send(server_ip);
         info!("[wifi] server_ip: {:?}", server_ip);
@@ -237,39 +240,45 @@ async fn wifi_connection_loop(
     Ok(())
 }
 
+async fn start_wifi(controller: &mut WifiController<'static>) -> Result<(), ()> {
+    let config = wifi::ModeConfig::Client(
+        wifi::ClientConfig::default()
+            .with_ssid(SSID.into())
+            .with_password(PASSWORD.into()),
+    );
+    while !controller.is_started().is_ok_and(|b| b) {
+        // configure and start wifi
+        controller
+            .set_config(&config)
+            .map_err(|err| error!("[wifi] unable to set wifi config: {:?}", err))?;
+        info!("[wifi] starting wifi...");
+        controller
+            .start_async()
+            .await
+            .map_err(|err| error!("[wifi] unable to start wifi: {:?}", err))?;
+        info!("[wifi] started");
+    }
+    Ok(())
+}
+
 async fn connect_wifi(controller: &mut WifiController<'static>) -> Result<(), ()> {
-    loop {
+    while wifi::sta_state() != WifiStaState::Connected {
         let state = wifi::sta_state();
-        if wifi::sta_state() == WifiStaState::Connected {
-            info!("[wifi] wifi connected!");
-            return Ok(());
+        if state != WifiStaState::Disconnected {
+            error!("[wifi] unexpected state: {}", state);
+            return Err(());
         }
-        warn!("[wifi] wifi disconnected: {}", state);
+        warn!("[wifi] wifi disconnected");
         SERVER_ADDR.sender().clear();
 
-        if !matches!(controller.is_started(), Ok(true)) {
-            // configure and start wifi
-            let config = wifi::ModeConfig::Client(
-                wifi::ClientConfig::default()
-                    .with_ssid(SSID.into())
-                    .with_password(PASSWORD.into()),
-            );
-            controller
-                .set_config(&config)
-                .map_err(|err| error!("[wifi] unable to set wifi config: {:?}", err))?;
-            info!("[wifi] starting wifi...");
-            controller
-                .start_async()
-                .await
-                .map_err(|err| error!("[wifi] unable to start wifi: {:?}", err))?;
-            info!("[wifi] wifi started");
-        }
         info!("[wifi] wifi connecting...");
         controller
             .connect_async()
             .await
             .map_err(|err| warn!("[wifi] failed to connect to wifi: {:?}", err))?;
+        info!("[wifi] wifi connected");
     }
+    Ok(())
 }
 
 async fn wait_for_dhcp(stack: Stack<'_>) {
