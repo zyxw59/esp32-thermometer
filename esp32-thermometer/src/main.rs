@@ -178,8 +178,13 @@ async fn measurement_loop(
     bme: &mut bme280::i2c::AsyncBME280<I2c<'static, esp_hal::Async>>,
     serialization_buffer: &mut thermometer_data::MeasurementBuffer,
 ) -> Result<(), ()> {
-    info!("[measurement] waiting for server ip");
-    let server_ip = server_ip_rx.get().await;
+    let server_ip = if let Some(server_ip) = server_ip_rx.try_get() {
+        server_ip
+    } else {
+        info!("[measurement] waiting for server ip");
+        server_ip_rx.get().await
+    };
+    info!("[measurement] server ip: {}", server_ip);
     socket
         .connect((server_ip, SERVER_PORT))
         .await
