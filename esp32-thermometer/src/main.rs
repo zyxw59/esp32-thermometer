@@ -141,6 +141,7 @@ async fn main(spawner: Spawner) -> ! {
         .spawn(wifi_connection(wifi_controller, stack))
         .unwrap();
     spawner.spawn(net_runner(runner)).unwrap();
+    spawner.spawn(heap_stats()).unwrap();
 
     info!("initializing BME280...");
     let mut bme = initialize_bme(
@@ -327,4 +328,18 @@ async fn initialize_bme(
         }
     })?;
     Ok(bme)
+}
+
+#[embassy_executor::task]
+async fn heap_stats() -> ! {
+    let mut stats;
+    let mut last = 0;
+    loop {
+        stats = esp_alloc::HEAP.stats();
+        if stats.current_usage != last {
+            info!("[heap] {}", stats);
+            last = stats.current_usage;
+        }
+        Timer::after(INTERVAL).await;
+    }
 }
