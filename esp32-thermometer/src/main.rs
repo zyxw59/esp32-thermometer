@@ -269,11 +269,11 @@ async fn start_wifi(controller: &mut WifiController<'static>) -> Result<(), ()> 
 async fn connect_wifi(controller: &mut WifiController<'static>) -> Result<(), ()> {
     while wifi::sta_state() != WifiStaState::Connected {
         let state = wifi::sta_state();
-        if state != WifiStaState::Disconnected {
+        if !matches!(state, WifiStaState::Disconnected | WifiStaState::Started) {
             error!("[wifi] unexpected state: {}", state);
             return Err(());
         }
-        warn!("[wifi] wifi disconnected");
+        warn!("[wifi] wifi {}", state);
         SERVER_ADDR.sender().clear();
 
         info!("[wifi] wifi connecting...");
