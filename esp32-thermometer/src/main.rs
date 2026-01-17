@@ -233,7 +233,7 @@ async fn wifi_connection_loop(
     stack: Stack<'static>,
 ) -> Result<(), ()> {
     start_wifi(controller).await?;
-    connect_wifi(controller).await?;
+    connect_wifi(controller)?;
     wait_for_dhcp(stack).await;
     if let Some(server_ip) = SERVER_ADDR.try_get() {
         info!("[wifi] server_ip already set to {:?}", server_ip);
@@ -266,22 +266,20 @@ async fn start_wifi(controller: &mut WifiController<'static>) -> Result<(), ()> 
     Ok(())
 }
 
-async fn connect_wifi(controller: &mut WifiController<'static>) -> Result<(), ()> {
-    while wifi::sta_state() != WifiStaState::Connected {
-        let state = wifi::sta_state();
+fn connect_wifi(controller: &mut WifiController<'static>) -> Result<(), ()> {
+    let state = wifi::sta_state();
+    if state != WifiStaState::Connected {
         if !matches!(state, WifiStaState::Disconnected | WifiStaState::Started) {
             error!("[wifi] unexpected state: {}", state);
-            return Err(());
         }
         warn!("[wifi] wifi {}", state);
         SERVER_ADDR.sender().clear();
 
         info!("[wifi] wifi connecting...");
         controller
-            .connect_async()
-            .await
+            .connect()
             .map_err(|err| warn!("[wifi] failed to connect to wifi: {:?}", err))?;
-        info!("[wifi] wifi connected");
+        info!("[wifi] wifi connection initiated");
     }
     Ok(())
 }

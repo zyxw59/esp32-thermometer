@@ -1,8 +1,16 @@
 [target.xtensa-esp32-none-elf]
-runner = "espflash flash --monitor --chip esp32 --log-format defmt"
+runner = [
+  "espflash",
+  "flash",
+  "--monitor",
+  "--chip", "esp32",
+  "--log-format", "defmt",
+  #"--output-format", "{[{L:severity}]%bold} {s}\n{({m} {F}:{l})%dimmed}",
+]
 
 [env]
-DEFMT_LOG="info,smoltcp::socket::dns=trace"
+DEFMT_LOG="info,smoltcp::socket=trace,esp32_thermometer=trace"
+# ESP_RADIO_CONFIG_DUMP_PACKETS="true"
 
 [build]
 rustflags = [
