@@ -67,6 +67,7 @@ const LOCATION_ID: u32 = parse_env!("LOCATION_ID" as u32);
 const INTERVAL: Duration = Duration::from_secs(parse_env_or_default!("INTERVAL" as u64, 60));
 const RETRY_INTERVAL: Duration =
     Duration::from_secs(parse_env_or_default!("RETRY_INTERVAL" as u64, 5));
+const MAX_TIMEOUTS: u16 = parse_env_or_default!("MAX_TIMEOUTS" as u16, 15);
 
 macro_rules! gpio_pin {
     ($var:literal, $default:expr) => {
@@ -84,8 +85,29 @@ const SDA_PIN: u8 = match gpio_pin!("SDA_PIN", 33) {
 };
 
 macro_rules! timeout_loop {
-    ($name:literal, $body:expr $(,)?) => {
+    ($name:literal, $body:expr $(, $max_timeouts:expr)? $(,)?) => {{
+        $(let _ = $max_timeouts; let mut timeouts = 0;)?
         loop {
+            match $body.with_timeout(INTERVAL).await {
+                Ok(res) => {
+                    $(let _ = $max_timeouts; timeouts = 0;)?
+                    if res.is_ok() {
+                        Timer::after(INTERVAL).await;
+                    } else {
+                        Timer::after(RETRY_INTERVAL).await;
+                    }
+                }
+                Err(_) => {
+                    warn!("[{}] timeout in loop", $name);
+                    $(
+                    if $max_timeouts > 0 && timeouts >= $max_timeouts {
+                        error!("[{}] too many timeouts, resetting", $name);
+                        esp_hal::system::software_reset();
+                    }
+                    timeouts += 1;
+                    )?
+                }
+            }
             if $body
                 .with_timeout(INTERVAL)
                 .await
@@ -98,7 +120,7 @@ macro_rules! timeout_loop {
                 Timer::after(RETRY_INTERVAL).await;
             }
         }
-    };
+    }};
 }
 
 static SERVER_ADDR: Watch<CriticalSectionRawMutex, IpAddress, 1> = Watch::new();
@@ -161,15 +183,19 @@ async fn main(spawner: Spawner) -> ! {
 
     let mut serialization_buffer: thermometer_data::MeasurementBuffer = [0; _];
 
-    timeout_loop!("measurement", {
-        let socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
-        measurement_loop(
-            socket,
-            &mut server_ip_rx,
-            &mut bme,
-            &mut serialization_buffer,
-        )
-    })
+    timeout_loop!(
+        "measurement",
+        {
+            let socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
+            measurement_loop(
+                socket,
+                &mut server_ip_rx,
+                &mut bme,
+                &mut serialization_buffer,
+            )
+        },
+        MAX_TIMEOUTS
+    )
 }
 
 async fn measurement_loop(
