@@ -35,3 +35,7 @@ The following environment variables are recognized and have default values:
 - `SCL_PIN`: GPIO pin for I²C clock. Defaults to 32
 - `SDA_PIN`: GPIO pin for I²C data. Defaults to 33
 - `INTERVAL`: Interval (in seconds) between measurements
+- `RETRY_INTERVAL`: Interval (in seconds) to wait before retrying after an
+  error or timeout.
+- `MAX_TIMEOUTS`: Maximum number of timeouts in the measurement loop before
+  resetting. Defaults to 15. Set to 0 to disable resets
